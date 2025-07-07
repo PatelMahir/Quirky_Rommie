@@ -1,0 +1,116 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  # Test and Build Job
+  test-and-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+    
+    - name: Install dependencies
+      run: npm ci
+    
+    - name: Type check
+      run: npm run check
+    
+    - name: Build application
+      run: npm run build
+      env:
+        NODE_ENV: production
+        VITE_API_URL: ${{ secrets.BACKEND_URL || 'http://localhost:5000' }}
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-files
+        path: |
+          dist/
+          !dist/**/*.map
+        retention-days: 1
+
+  # Deploy Frontend to Vercel
+  deploy-frontend:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Deploy to Vercel
+      uses: amondnet/vercel-action@v25
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-args: '--prod'
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        working-directory: ./
+        
+  # Deploy Backend to Railway
+  deploy-backend:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Deploy to Railway
+      uses: bervProject/railway-deploy@v1.0.6
+      with:
+        railway_token: ${{ secrets.RAILWAY_TOKEN }}
+        service: ${{ secrets.RAILWAY_SERVICE_ID }}
+
+  # Alternative: Deploy to Render
+  deploy-backend-render:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && false  # Set to true to enable
+    
+    steps:
+    - name: Deploy to Render
+      uses: johnbeynon/render-deploy-action@v0.0.8
+      with:
+        service-id: ${{ secrets.RENDER_SERVICE_ID }}
+        api-key: ${{ secrets.RENDER_API_KEY }}
+
+  # Health Check
+  health-check:
+    needs: [deploy-frontend, deploy-backend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Wait for deployment
+      run: sleep 60
+      
+    - name: Check frontend health
+      run: |
+        curl -f ${{ secrets.FRONTEND_URL || 'https://your-app.vercel.app' }} || exit 1
+        
+    - name: Check backend health
+      run: |
+        curl -f ${{ secrets.BACKEND_URL || 'https://your-backend.railway.app' }}/api/stats || exit 1
+        
+    - name: Notify success
+      if: success()
+      run: |
+        echo "🎉 Deployment successful!"
+        echo "Frontend: ${{ secrets.FRONTEND_URL }}"
+        echo "Backend: ${{ secrets.BACKEND_URL }}"
